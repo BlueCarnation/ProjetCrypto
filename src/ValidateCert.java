@@ -20,22 +20,16 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateHolder;
 import org.bouncycastle.cert.ocsp.*;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import java.security.Security;
-import java.security.Signature;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder;
-
 import org.bouncycastle.asn1.x9.ECNamedCurveTable;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.crypto.params.ECDomainParameters;
 import org.bouncycastle.crypto.params.ECPublicKeyParameters;
 import org.bouncycastle.crypto.signers.ECDSASigner;
 import org.bouncycastle.jcajce.provider.asymmetric.util.EC5Util;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.math.ec.ECPoint;
-
-import java.math.BigInteger;
 import java.security.*;
-import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.*;
 
@@ -45,23 +39,24 @@ public class ValidateCert {
     private static Map<String, X509CRL> crlCache = new HashMap<>();
 
     public static void main(String[] args) {
+        // Vérification des arguments
         if (args.length < 3 || !"-format".equals(args[0])) {
             System.err.println("Usage for single cert: validate-cert -format <DER|PEM> <myRCAcertFile>");
             System.err.println("Usage for cert chain: validate-cert -format <DER|PEM> <myRCAcertFile> <myICAcertFile> ... <myLeafcertFile>");
             System.exit(1);
         }
 
-        String format = args[1];
-        String[] certFiles = new String[args.length - 2];
+        String format = args[1]; // Format du certificat (DER ou PEM).
+        String[] certFiles = new String[args.length - 2]; // Chemins des fichiers de certificat.
         System.arraycopy(args, 2, certFiles, 0, args.length - 2);
 
         try {
             if (certFiles.length == 1) {
-                // Si un seul certificat est fourni
+                // Charge et valide un seul certificat.
                 X509Certificate cert = loadCertificate(certFiles[0], format);
                 validateCertificate(cert);
             } else {
-                // Pour une chaîne de certificats
+                // Charge et valide une chaîne de certificats.
                 validateCertChain(certFiles, format);
                 System.out.println("Certificate chain is valid.");
             }
@@ -70,12 +65,16 @@ public class ValidateCert {
         }
     }
 
-
+    // Charge un certificat à partir d'un fichier, en utilisant le format spécifié (DER ou PEM).
     private static X509Certificate loadCertificate(String certFile, String format) throws IOException, CertificateException {
+        // Ouvre le fichier de certificat et lit son contenu.
         FileInputStream fis = new FileInputStream(certFile);
         byte[] fileContent = fis.readAllBytes();
+
+        // Crée une fabrique de certificats pour le type X.509.
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
 
+        // Traite le fichier en fonction de son format (DER ou PEM) et renvoie le certificat chargé.
         if (format.equalsIgnoreCase("DER")) {
             // Vérifier si le fichier contient des en-têtes/pieds de page PEM
             String fileContentString = new String(fileContent);
@@ -99,15 +98,38 @@ public class ValidateCert {
         }
     }
 
+    // Valide un certificat, en vérifiant sa signature, sa période de validité, et son statut de révocation.
     private static void validateCertificate(X509Certificate cert) throws Exception {
         PublicKey key = cert.getPublicKey();
         List<String> validationErrors = new ArrayList<>();
 
-        // Tenter de vérifier la signature du certificat
-        try {
-            cert.verify(key);
-        } catch (SignatureException e) {
-            validationErrors.add("Signature does not match.");
+        if (key instanceof RSAPublicKey) {
+            // Vérification de la signature RSA
+            boolean isValidRSA = verifyRSASignature(cert, (RSAPublicKey) key);
+            if (!isValidRSA) {
+                System.err.println("RSA Signature verification failed.");
+            } else {
+                System.out.println("RSA Signature verified successfully.");
+            }
+        } else if (key instanceof ECPublicKey) {
+            // Vérification de la signature ECDSA
+            try {
+                boolean isValidECDSA = verifyECDSASignature(cert, cert.getTBSCertificate());
+                if (!isValidECDSA) {
+                    System.err.println("ECDSA Signature verification failed.");
+                } else {
+                    System.out.println("ECDSA Signature verified successfully.");
+                }
+            } catch (GeneralSecurityException e) {
+                System.err.println("Failed to verify ECDSA signature: " + e.getMessage());
+            }
+        } else {
+            // Autres types de clés
+            try {
+                cert.verify(key);
+            } catch (SignatureException e) {
+                validationErrors.add("Signature does not match.");
+            }
         }
 
         // Vérification de KeyUsage
@@ -152,16 +174,6 @@ public class ValidateCert {
         System.out.println("Signature: " + Arrays.toString(cert.getSignature()));
         System.out.println("Subject: " + cert.getSubjectDN());
         System.out.println("Issuer: " + cert.getIssuerDN());
-    }
-
-    private static void checkCRLSingle(X509Certificate cert) throws Exception {
-        List<String> crlDistPoints = getCRLDistributionPoints(cert);
-        for (String crlDP : crlDistPoints) {
-            X509CRL crl = downloadCRL(crlDP);
-            if (crl.isRevoked(cert)) {
-                throw new CertificateException("The certificate is revoked by CRL at " + crlDP);
-            }
-        }
     }
 
     private static void checkCRL(X509Certificate cert, X509Certificate issuerCert) throws Exception {
@@ -276,15 +288,15 @@ public class ValidateCert {
     }
 
     private static boolean verifyRSASignature(X509Certificate subject, RSAPublicKey publicKey) throws Exception {
-        // Calculez le hash SHA-256 du contenu du certificat
+        // Calcule le hash SHA-256 du contenu du certificat
         MessageDigest sha256Digest = MessageDigest.getInstance("SHA-256");
         byte[] certData = subject.getTBSCertificate(); // Les données à signer (TBS = To Be Signed)
         byte[] hash = sha256Digest.digest(certData);
 
-        // Obtenez la signature à vérifier
+        // Obtention de la signature à vérifier
         byte[] signature = subject.getSignature();
 
-        // Déchiffrez la signature avec la clé publique RSA
+        // Déchiffrement de la signature avec la clé publique RSA
         BigInteger signatureInt = new BigInteger(1, signature);
         BigInteger modulus = publicKey.getModulus();
         BigInteger exponent = publicKey.getPublicExponent();
