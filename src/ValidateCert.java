@@ -177,20 +177,11 @@ public class ValidateCert {
     }
 
     private static void checkCRL(X509Certificate cert, X509Certificate issuerCert) throws Exception {
-        String ocspUrl = getOCSPUrl(cert);
-
-        if (ocspUrl != null && !ocspUrl.isEmpty()) {
-            // Si une URL OCSP est disponible, effectuez la vérification OCSP
-            System.out.println("OCSP URL found: " + ocspUrl);
-            checkOCSP(cert, issuerCert, ocspUrl);
-        } else {
-            // Sinon, effectuez la vérification CRL comme auparavant
-            List<String> crlDistPoints = getCRLDistributionPoints(cert);
-            for (String crlDP : crlDistPoints) {
-                X509CRL crl = downloadCRL(crlDP);
-                if (crl.isRevoked(cert)) {
-                    throw new CertificateException("The certificate is revoked by CRL at " + crlDP);
-                }
+        List<String> crlDistPoints = getCRLDistributionPoints(cert);
+        for (String crlDP : crlDistPoints) {
+            X509CRL crl = downloadCRL(crlDP);
+            if (crl.isRevoked(cert)) {
+                throw new CertificateException("The certificate is revoked by CRL at " + crlDP);
             }
         }
     }
